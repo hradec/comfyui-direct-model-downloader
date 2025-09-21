@@ -6,11 +6,37 @@ This extension adds two complementary features that make it easier to fetch miss
    <img width="520" height="247" alt="image" src="https://github.com/user-attachments/assets/2c8cec9d-45eb-4677-8712-28e55f52bc03" />
    <img width="1226" height="651" alt="image" src="https://github.com/user-attachments/assets/82d7a29c-089b-463b-8894-79fa3fdf445a" />
 
-2. **Workflow node (`DirectModelDownload`)** – a utility node that can download a model as part of a workflow by specifying a URL and selecting a destination path.
+2. **Workflow node (`DirectModelDownload`)** – a utility node that can download a model as part of a workflow by specifying a URL and selecting the model path to use and the sub-folder inside the model path. You also have to specify the name of the file on disk.
    ![2025-09-21_02-24](https://github.com/user-attachments/assets/bddbe82e-db9f-4978-9d3d-b60b8079ea1a)
 
+---
 
-Both pieces run entirely as a plug-in: no core files are patched, and everything lives inside this `custom_nodes/direct_model_downloader` package.
+## Installation
+
+1. Clone or copy this directory into `ComfyUI/custom_nodes/`.
+2. Ensure the environment has the dependencies already used by ComfyUI (`aiohttp`, `tqdm`, `requests`). Most setups will already include these.
+3. Restart ComfyUI so the new route, front-end assets, and node class are registered.
+4. For the UI button to load, perform a hard refresh in the browser after restarting the server.
+
+---
+
+## Usage
+
+### Missing Models Dialog
+
+1. Load a workflow that references missing model files.
+2. When the dialog appears, click **Download directly** next to any entry.
+3. Watch the button fill from left to right; once complete it turns green and disables itself.
+4. Errors will re-enable the button and show a tooltip; try again after resolving connectivity issues.
+
+### `DirectModelDownload` Node
+
+1. Add the node from `utils/download` category.
+2. Paste the URL.
+3. Select a models root (e.g., `/path/to/ComfyUI/models`).
+4. Pick the subfolder (e.g., `checkpoints`).
+5. Optionally set a custom filename or enable overwrite.
+6. The node outputs the final path, which can be fed into loaders or monitoring nodes.
 
 ---
 
@@ -45,35 +71,6 @@ Both pieces run entirely as a plug-in: no core files are patched, and everything
   - `completed` – signals success along with the final path.
   - `error` – returns the error message (and cleans up partial files).
 - Mirrors progress to the console using `tqdm` for developer insights.
-
----
-
-## Installation
-
-1. Clone or copy this directory into `ComfyUI/custom_nodes/`.
-2. Ensure the environment has the dependencies already used by ComfyUI (`aiohttp`, `tqdm`, `requests`). Most setups will already include these.
-3. Restart ComfyUI so the new route, front-end assets, and node class are registered.
-4. For the UI button to load, perform a hard refresh in the browser after restarting the server.
-
----
-
-## Usage
-
-### Missing Models Dialog
-
-1. Load a workflow that references missing model files.
-2. When the dialog appears, click **Download directly** next to any entry.
-3. Watch the button fill from left to right; once complete it turns green and disables itself.
-4. Errors will re-enable the button and show a tooltip; try again after resolving connectivity issues.
-
-### `DirectModelDownload` Node
-
-1. Add the node from `utils/download` category.
-2. Paste the URL.
-3. Select a models root (e.g., `/path/to/ComfyUI/models`).
-4. Pick the subfolder (e.g., `checkpoints`).
-5. Optionally set a custom filename or enable overwrite.
-6. The node outputs the final path, which can be fed into loaders or monitoring nodes.
 
 ---
 
