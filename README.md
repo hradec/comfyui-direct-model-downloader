@@ -7,6 +7,8 @@ This extension adds two complementary features that make it easier to fetch miss
    <img width="1226" height="651" alt="image" src="https://github.com/user-attachments/assets/82d7a29c-089b-463b-8894-79fa3fdf445a" />
 
 2. **Workflow node (`DirectModelDownload`)** – a utility node that can download a model as part of a workflow by specifying a URL and selecting a destination path.
+   ![2025-09-21_02-24](https://github.com/user-attachments/assets/bddbe82e-db9f-4978-9d3d-b60b8079ea1a)
+
 
 Both pieces run entirely as a plug-in: no core files are patched, and everything lives inside this `custom_nodes/direct_model_downloader` package.
 
