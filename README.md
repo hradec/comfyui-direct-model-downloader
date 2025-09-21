@@ -2,7 +2,7 @@
 
 This extension adds two complementary features that make it easier to fetch missing model files in ComfyUI:
 
-1. **Missing Models dialog helper** – a “Download directly” button beside each missing model entry that downloads files asynchronously (with streamed progress) right into the correct directory.
+1. **Missing Models dialog helper** – a “Download directly” button beside each missing model entry that downloads files asynchronously (with streamed progress) right into the correct directory. Now you can open the templates, and get all the needed models installed automatically!
    <img width="520" height="247" alt="image" src="https://github.com/user-attachments/assets/2c8cec9d-45eb-4677-8712-28e55f52bc03" />
    <img width="1226" height="651" alt="image" src="https://github.com/user-attachments/assets/82d7a29c-089b-463b-8894-79fa3fdf445a" />
 
