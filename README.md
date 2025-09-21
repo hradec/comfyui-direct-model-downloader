@@ -3,6 +3,9 @@
 This extension adds two complementary features that make it easier to fetch missing model files in ComfyUI:
 
 1. **Missing Models dialog helper** – a “Download directly” button beside each missing model entry that downloads files asynchronously (with streamed progress) right into the correct directory.
+   <img width="520" height="247" alt="image" src="https://github.com/user-attachments/assets/2c8cec9d-45eb-4677-8712-28e55f52bc03" />
+   <img width="1226" height="651" alt="image" src="https://github.com/user-attachments/assets/82d7a29c-089b-463b-8894-79fa3fdf445a" />
+
 2. **Workflow node (`DirectModelDownload`)** – a utility node that can download a model as part of a workflow by specifying a URL and selecting a destination path.
 
 Both pieces run entirely as a plug-in: no core files are patched, and everything lives inside this `custom_nodes/direct_model_downloader` package.
