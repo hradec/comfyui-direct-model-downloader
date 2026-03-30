@@ -12,7 +12,7 @@ const LABELS = {
   exists: 'Already exists',
   error: 'Retry download'
 };
-const BULK_LABEL = 'Download All Directly';
+const BULK_LABEL = 'Directly';
 const PROGRESS_VAR = '--direct-download-progress';
 const STYLE_ID = 'direct-download-style';
 const ATTACH_DEBOUNCE_MS = 120;
