@@ -12,9 +12,10 @@ const LABELS = {
   exists: 'Already exists',
   error: 'Retry download'
 };
-const BULK_LABEL = 'Download all directly to folders';
+const BULK_LABEL = 'Download All Directly';
 const PROGRESS_VAR = '--direct-download-progress';
 const STYLE_ID = 'direct-download-style';
+const ATTACH_DEBOUNCE_MS = 120;
 const FALLBACK_DIALOG_BUTTON_CLASS =
   'relative inline-flex items-center justify-center gap-2 cursor-pointer touch-manipulation whitespace-nowrap appearance-none border-none rounded-md text-sm font-medium font-inter transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 text-secondary-foreground bg-secondary-background hover:bg-secondary-background-hover h-8 rounded-lg p-2 text-xs';
 const PANEL_BUTTON_CLASS = `${FALLBACK_DIALOG_BUTTON_CLASS} w-full`;
@@ -564,6 +565,17 @@ function setPanelButtonContent(button, label) {
   button.dataset.directDownloadLabel = label;
 }
 
+function ensureButtonLabel(button, label) {
+  let labelEl = getLabelElement(button) || button.querySelector('span');
+  if (!labelEl) {
+    labelEl = document.createElement('span');
+    button.appendChild(labelEl);
+  }
+  labelEl.classList.add(LABEL_CLASS);
+  labelEl.textContent = label;
+  button.dataset.directDownloadLabel = label;
+}
+
 function extractDialogModelInfo(row) {
   const nameEl = row.querySelector('span[title]');
   let filename =
@@ -753,6 +765,50 @@ function findMissingModelPanelRowsByButton() {
   }));
 }
 
+function getPanelBulkRowData() {
+  const rows = findMissingModelPanelRows();
+  if (rows.length) return rows;
+  return findMissingModelPanelRowsByButton();
+}
+
+function getButtonText(button) {
+  return (
+    button?.textContent ||
+    button?.getAttribute?.('aria-label') ||
+    ''
+  ).trim();
+}
+
+function findPanelBulkButtons() {
+  const seenScopes = new Set();
+  return Array.from(document.querySelectorAll('button')).filter((button) => {
+    if (!(button instanceof HTMLButtonElement)) return false;
+    if (button.closest(PANEL_ROW_SELECTOR)) return false;
+
+    const text = getButtonText(button);
+    const isPatched = button.dataset.directDownloadPanelBulk === '1';
+    if (!isPatched && !/download\s+all/i.test(text)) return false;
+
+    const scope = findPanelBulkScope(button);
+    if (scope === document) return false;
+    if (!scope.querySelector(PANEL_ROW_SELECTOR)) return false;
+    if (seenScopes.has(scope)) return false;
+    seenScopes.add(scope);
+    return true;
+  });
+}
+
+function findPanelBulkScope(button) {
+  let current = button?.parentElement || null;
+  while (current && current !== document.body) {
+    if (current.querySelector(PANEL_ROW_SELECTOR)) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return document;
+}
+
 function getPanelInputContainer(row) {
   return (
     row?.querySelector(':scope > .mt-1.flex.flex-col.gap-1') ||
@@ -826,6 +882,7 @@ function attachPanelRowButtons(folderPaths) {
 
 function attachPanelButtons(folderPaths) {
   attachPanelRowButtons(folderPaths);
+  attachPanelBulkButtons(folderPaths);
 }
 
 function buildPayload(info, destination) {
@@ -839,6 +896,62 @@ function buildPayload(info, destination) {
     payload.destination = destination;
   }
   return payload;
+}
+
+function parseButtonPayload(button) {
+  const rawPayload = button?.dataset?.directDownloadPayload;
+  if (!rawPayload) return null;
+  try {
+    return JSON.parse(rawPayload);
+  } catch (error) {
+    console.warn('[DirectDownload] invalid payload', error, rawPayload);
+    return null;
+  }
+}
+
+function collectDownloadTargets(buttons) {
+  return Array.from(buttons)
+    .filter((rowButton) => rowButton instanceof HTMLButtonElement && !rowButton.disabled)
+    .map((rowButton) => {
+      const payload = parseButtonPayload(rowButton);
+      if (!payload) return null;
+      return { button: rowButton, payload };
+    })
+    .filter(Boolean);
+}
+
+async function performBulkDownload(button, targets) {
+  if (!targets.length) {
+    setButtonState(button, 'error', 'No downloadable models');
+    setTimeout(() => setButtonState(button, 'idle'), 2500);
+    return;
+  }
+
+  setButtonState(button, 'loading');
+  updateProgressVisual(button, 0, targets.length);
+  let completed = 0;
+
+  const results = await Promise.allSettled(
+    targets.map(async (target) => {
+      const result = await performDownload(target.button, target.payload);
+      completed += 1;
+      updateProgressVisual(button, completed, targets.length);
+      return result;
+    })
+  );
+
+  const hadError = results.some((result) => {
+    if (result.status === 'rejected') return true;
+    return result.value?.status === 'error';
+  });
+
+  if (hadError) {
+    setButtonState(button, 'error', 'Some downloads failed');
+    setTimeout(() => setButtonState(button, 'idle'), 3500);
+    return;
+  }
+
+  setButtonState(button, 'success');
 }
 
 function findMatchingModel(models, filename, directory) {
@@ -935,52 +1048,47 @@ function attachDialogFooterButton(dialog, folderPaths, baseClassName) {
     const listContainer = getDialogListContainer(dialog);
     if (!listContainer) return;
 
-    const rowButtons = Array.from(
+    const targets = collectDownloadTargets(
       listContainer.querySelectorAll(
         `.${BUTTON_CLASS}[data-direct-download-row="1"]`
       )
     );
-    const targets = rowButtons
-      .filter((rowButton) => !rowButton.disabled)
-      .map((rowButton) => {
-        const rawPayload = rowButton.dataset.directDownloadPayload;
-        if (!rawPayload) return null;
-        try {
-          return { button: rowButton, payload: JSON.parse(rawPayload) };
-        } catch (error) {
-          console.warn('[DirectDownload] invalid payload', error, rawPayload);
-          return null;
-        }
-      })
-      .filter(Boolean);
+    await performBulkDownload(button, targets);
+  });
+}
 
-    if (!targets.length) {
-      setButtonState(button, 'error', 'No downloadable models');
-      setTimeout(() => setButtonState(button, 'idle'), 2500);
+function attachPanelBulkButtons(folderPaths) {
+  findPanelBulkButtons().forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+
+    button.classList.add(BUTTON_CLASS);
+    button.dataset.directDownloadPanelBulk = '1';
+    button.dataset.directDownloadLabel = BULK_LABEL;
+    button.type = 'button';
+    button.title = BULK_LABEL;
+    button.setAttribute('aria-label', BULK_LABEL);
+    ensureButtonLabel(button, BULK_LABEL);
+
+    if (button.dataset.directDownloadPanelBulkBound === '1') {
       return;
     }
 
-    setButtonState(button, 'loading');
-    updateProgressVisual(button, 0, targets.length);
-    let completed = 0;
-    let hadError = false;
+    button.dataset.directDownloadPanelBulkBound = '1';
+    button.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      if (button.disabled) return;
 
-    for (const target of targets) {
-      const result = await performDownload(target.button, target.payload);
-      completed += 1;
-      updateProgressVisual(button, completed, targets.length);
-      if (result?.status === 'error') {
-        hadError = true;
-      }
-    }
-
-    if (hadError) {
-      setButtonState(button, 'error', 'Some downloads failed');
-      setTimeout(() => setButtonState(button, 'idle'), 3500);
-      return;
-    }
-
-    setButtonState(button, 'success');
+      attachPanelRowButtons(folderPaths);
+      const scope = findPanelBulkScope(button);
+      const targets = collectDownloadTargets(
+        scope.querySelectorAll(
+          `.${BUTTON_CLASS}[data-direct-download-panel-row="1"]`
+        )
+      );
+      await performBulkDownload(button, targets);
+    }, true);
   });
 }
 
@@ -1048,7 +1156,18 @@ async function bootstrap() {
     return;
   }
 
-  const observer = new MutationObserver(() => attachAllButtons(folderPaths));
+  let attachTimer = null;
+  const scheduleAttach = () => {
+    if (attachTimer !== null) {
+      clearTimeout(attachTimer);
+    }
+    attachTimer = window.setTimeout(() => {
+      attachTimer = null;
+      attachAllButtons(folderPaths);
+    }, ATTACH_DEBOUNCE_MS);
+  };
+
+  const observer = new MutationObserver(() => scheduleAttach());
   observer.observe(document.body, { childList: true, subtree: true });
   attachAllButtons(folderPaths);
 }
