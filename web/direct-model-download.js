@@ -17,6 +17,13 @@ const PROGRESS_VAR = '--direct-download-progress';
 const STYLE_ID = 'direct-download-style';
 const FALLBACK_DIALOG_BUTTON_CLASS =
   'relative inline-flex items-center justify-center gap-2 cursor-pointer touch-manipulation whitespace-nowrap appearance-none border-none rounded-md text-sm font-medium font-inter transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 text-secondary-foreground bg-secondary-background hover:bg-secondary-background-hover h-8 rounded-lg p-2 text-xs';
+const PANEL_BUTTON_CLASS = `${FALLBACK_DIALOG_BUTTON_CLASS} w-full`;
+const PANEL_BUTTON_ROW_CLASS = 'flex w-full items-start py-1';
+const PANEL_ROW_SELECTOR = 'div.flex.w-full.flex-col.pb-3';
+const PANEL_GROUP_SELECTOR =
+  'div.flex.w-full.flex-col.border-t.border-interface-stroke.py-2';
+const MISSING_MODEL_ROW_ICON_SELECTOR =
+  'i[class*="icon-[lucide--file-check]"]';
 const BADGE_DIRECTORY_MAP = {
   VAE: 'vae',
   DIFFUSION: 'diffusion_models',
@@ -366,12 +373,62 @@ function findMissingModelsDialog() {
   );
 }
 
+function getVueComponentFromElement(element) {
+  return (
+    element?.__vueParentComponent ||
+    element?.__vnode?.component ||
+    null
+  );
+}
+
+function findVueInstanceInDomChain(element) {
+  let current = element;
+  while (current) {
+    const instance = getVueComponentFromElement(current);
+    if (instance) return instance;
+    current = current.parentElement || null;
+  }
+  return null;
+}
+
+function unwrapMaybeRef(value) {
+  return value && typeof value === 'object' && 'value' in value
+    ? value.value
+    : value;
+}
+
 function findVuePropsWithModels(element) {
-  let instance = element?.__vueParentComponent;
+  let instance = findVueInstanceInDomChain(element);
   while (instance) {
     const props = instance.props || instance.vnode?.props;
     if (props && Array.isArray(props.missingModels)) {
       return props;
+    }
+    instance = instance.parent;
+  }
+  return null;
+}
+
+function findVueComponentWithModel(element) {
+  let instance = findVueInstanceInDomChain(element);
+  while (instance) {
+    const props = instance.props || instance.vnode?.props;
+    const model = props?.model;
+    if (
+      model &&
+      typeof model.name === 'string' &&
+      model.representative &&
+      typeof model.representative === 'object'
+    ) {
+      const root =
+        instance.vnode?.el instanceof Element
+          ? instance.vnode.el
+          : instance.subTree?.el instanceof Element
+            ? instance.subTree.el
+            : null;
+      if (root) {
+        return { element: root, props };
+      }
     }
     instance = instance.parent;
   }
@@ -387,6 +444,44 @@ function findPiniaInstance(vueApp) {
     if (value?._s?.get) return value;
   }
   return null;
+}
+
+function getPiniaStores(pinia) {
+  const registry = pinia?._s;
+  if (!registry) return [];
+  if (typeof registry.values === 'function') {
+    return Array.from(registry.values());
+  }
+  return Object.values(registry);
+}
+
+function getMissingModelStoreData(fallbackPaths) {
+  const appRoot = document.querySelector('#vue-app');
+  const vueApp = appRoot?.__vue_app__;
+  if (!vueApp) {
+    return { missingModelCandidates: null, folderPaths: fallbackPaths };
+  }
+
+  const pinia = findPiniaInstance(vueApp);
+  if (!pinia) {
+    return { missingModelCandidates: null, folderPaths: fallbackPaths };
+  }
+
+  const store = getPiniaStores(pinia).find((entry) =>
+    Array.isArray(unwrapMaybeRef(entry?.missingModelCandidates))
+  );
+  const missingModelCandidates = unwrapMaybeRef(store?.missingModelCandidates);
+  const storeFolderPaths = unwrapMaybeRef(store?.folderPaths);
+
+  return {
+    missingModelCandidates: Array.isArray(missingModelCandidates)
+      ? missingModelCandidates
+      : null,
+    folderPaths:
+      storeFolderPaths && typeof storeFolderPaths === 'object'
+        ? storeFolderPaths
+        : fallbackPaths
+  };
 }
 
 function getDialogStoreData() {
@@ -450,6 +545,25 @@ function createDialogButton(baseClassName, label) {
   return button;
 }
 
+function createPanelButton(label) {
+  const container = document.createElement('div');
+  container.className = PANEL_BUTTON_ROW_CLASS;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `${PANEL_BUTTON_CLASS} ${BUTTON_CLASS}`.trim();
+  button.style.width = '100%';
+  setPanelButtonContent(button, label);
+  container.appendChild(button);
+  return { container, button };
+}
+
+function setPanelButtonContent(button, label) {
+  button.innerHTML =
+    '<i class="text-foreground mr-1 icon-[lucide--download] size-4 shrink-0" aria-hidden="true"></i>' +
+    `<span class="text-foreground min-w-0 truncate text-sm ${LABEL_CLASS}">${label}</span>`;
+  button.dataset.directDownloadLabel = label;
+}
+
 function extractDialogModelInfo(row) {
   const nameEl = row.querySelector('span[title]');
   let filename =
@@ -490,6 +604,228 @@ function getDialogRows(listContainer) {
   const rows = Array.from(listContainer.children);
   const filtered = rows.filter((row) => row.querySelector('span[title]'));
   return filtered.length ? filtered : rows;
+}
+
+function getPanelRowRoot(element) {
+  return element?.closest?.(PANEL_ROW_SELECTOR) || null;
+}
+
+function isMissingModelPanelRow(row) {
+  return !!(
+    row?.querySelector?.(MISSING_MODEL_ROW_ICON_SELECTOR) &&
+    row.querySelector('p[title]')
+  );
+}
+
+function findMissingModelPanelRows() {
+  const rows = new Map();
+
+  const addRow = (row, props) => {
+    const root = getPanelRowRoot(row) || row;
+    if (!isMissingModelPanelRow(root) || rows.has(root)) return;
+    rows.set(root, props || null);
+  };
+
+  document.querySelectorAll(PANEL_ROW_SELECTOR).forEach((row) => {
+    if (!isMissingModelPanelRow(row)) return;
+    const match =
+      findVueComponentWithModel(row) ||
+      findVueComponentWithModel(row.querySelector(MISSING_MODEL_ROW_ICON_SELECTOR));
+    addRow(match?.element || row, match?.props);
+  });
+
+  if (!rows.size) {
+    document
+      .querySelectorAll(MISSING_MODEL_ROW_ICON_SELECTOR)
+      .forEach((icon) => {
+        const match = findVueComponentWithModel(icon);
+        addRow(match?.element || icon, match?.props);
+      });
+  }
+
+  return Array.from(rows.entries()).map(([element, props]) => ({
+    element,
+    props
+  }));
+}
+
+function stripPanelCountSuffix(label) {
+  if (typeof label !== 'string') return null;
+  const stripped = label.replace(/\s*\(\d+\)\s*$/, '').trim();
+  return stripped || null;
+}
+
+function getPanelRowModelName(row) {
+  const nameEl = row?.querySelector('p[title]');
+  return (
+    nameEl?.getAttribute('title')?.trim() ||
+    stripPanelCountSuffix(nameEl?.textContent) ||
+    null
+  );
+}
+
+function getPanelGroupDirectory(row) {
+  const group = row?.closest(PANEL_GROUP_SELECTOR);
+  const header = group?.querySelector(
+    ':scope > .flex.h-8.w-full.items-center p'
+  );
+  return stripPanelCountSuffix(header?.textContent);
+}
+
+function findStoreMissingModelInfo(modelName, directoryHint, storeData) {
+  const candidates = storeData?.missingModelCandidates;
+  if (!modelName || !Array.isArray(candidates)) return null;
+
+  let matches = candidates.filter((candidate) => candidate?.name === modelName);
+  if (!matches.length) return null;
+
+  if (directoryHint) {
+    const exactMatches = matches.filter(
+      (candidate) => candidate?.directory === directoryHint
+    );
+    if (exactMatches.length) {
+      matches = exactMatches;
+    }
+  }
+
+  const candidate =
+    matches.find(
+      (entry) => entry?.url && entry?.directory && typeof entry.name === 'string'
+    ) || matches[0];
+  if (!candidate?.url || !candidate?.directory || !candidate?.name) {
+    return null;
+  }
+
+  return {
+    url: candidate.url,
+    directory: candidate.directory,
+    filename: candidate.name
+  };
+}
+
+function getPanelPathMap(folderPaths, storeData) {
+  return storeData?.folderPaths && typeof storeData.folderPaths === 'object'
+    ? storeData.folderPaths
+    : folderPaths;
+}
+
+function getPanelModelInfo(props, row, storeData) {
+  const representative = props?.model?.representative;
+  const info = {
+    url: representative?.url || null,
+    directory:
+      props?.directory || representative?.directory || getPanelGroupDirectory(row),
+    filename: props?.model?.name || representative?.name || getPanelRowModelName(row)
+  };
+
+  if (info.url && info.directory && info.filename) {
+    return info;
+  }
+
+  const fallbackInfo = findStoreMissingModelInfo(
+    info.filename || getPanelRowModelName(row),
+    info.directory,
+    storeData
+  );
+  if (!fallbackInfo) {
+    return info;
+  }
+
+  return {
+    url: info.url || fallbackInfo.url,
+    directory: info.directory || fallbackInfo.directory,
+    filename: info.filename || fallbackInfo.filename
+  };
+}
+
+function findMissingModelPanelRowsByButton() {
+  const rows = new Map();
+  document
+    .querySelectorAll('.flex.w-full.items-start.py-1 > button')
+    .forEach((button) => {
+      const row = getPanelRowRoot(button);
+      if (!isMissingModelPanelRow(row) || rows.has(row)) return;
+      rows.set(row, null);
+    });
+  return Array.from(rows.entries()).map(([element, props]) => ({
+    element,
+    props
+  }));
+}
+
+function getPanelInputContainer(row) {
+  return (
+    row?.querySelector(':scope > .mt-1.flex.flex-col.gap-1') ||
+    row?.querySelector('.mt-1.flex.flex-col.gap-1') ||
+    row
+  );
+}
+
+function getExistingPanelDownloadButton(inputContainer) {
+  return (
+    inputContainer?.querySelector(':scope > .flex.w-full.items-start.py-1 button') ||
+    inputContainer?.querySelector('.flex.w-full.items-start.py-1 button') ||
+    null
+  );
+}
+
+function attachPanelRowButtons(folderPaths) {
+  const rows = findMissingModelPanelRows();
+  const fallbackRows = rows.length ? [] : findMissingModelPanelRowsByButton();
+  const allRows = rows.length ? rows : fallbackRows;
+  const storeData = getMissingModelStoreData(folderPaths);
+  const pathMap = getPanelPathMap(folderPaths, storeData);
+  allRows.forEach(({ element: row, props }) => {
+    const existingPatchedButton = row.querySelector(
+      `.${BUTTON_CLASS}[data-direct-download-panel-row="1"]`
+    );
+    if (existingPatchedButton) {
+      return;
+    }
+
+    const inputContainer = getPanelInputContainer(row);
+    if (!inputContainer) return;
+
+    const info = getPanelModelInfo(props, row, storeData);
+    if (!info.url || !info.directory || !info.filename) return;
+
+    const paths = pathMap?.[info.directory] || [];
+    const destination = paths[0];
+    const destinationLabel = destination ? `${destination}/${info.filename}` : '';
+    const payload = buildPayload(info, destination);
+    if (!payload) return;
+
+    const existingButton = getExistingPanelDownloadButton(inputContainer);
+    let button = existingButton;
+
+    if (!button) {
+      const created = createPanelButton(LABELS.idle);
+      inputContainer.appendChild(created.container);
+      button = created.button;
+    }
+
+    if (!(button instanceof HTMLButtonElement)) return;
+
+    button.classList.add(BUTTON_CLASS);
+    button.dataset.directDownloadPanelRow = '1';
+    button.dataset.directDownloadPayload = JSON.stringify(payload);
+    button.dataset.directDownloadLabel = LABELS.idle;
+    button.title = destinationLabel || info.directory;
+    button.setAttribute('aria-label', `${LABELS.idle} ${info.filename}`);
+    setPanelButtonContent(button, LABELS.idle);
+
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      if (button.disabled) return;
+      performDownload(button, payload);
+    }, true);
+  });
+}
+
+function attachPanelButtons(folderPaths) {
+  attachPanelRowButtons(folderPaths);
 }
 
 function buildPayload(info, destination) {
@@ -699,6 +1035,7 @@ function attachLegacyButtons(folderPaths) {
 function attachAllButtons(folderPaths) {
   attachLegacyButtons(folderPaths);
   attachDialogButtons(folderPaths);
+  attachPanelButtons(folderPaths);
 }
 
 async function bootstrap() {
