@@ -460,12 +460,20 @@ function getMissingModelStoreData(fallbackPaths) {
   const appRoot = document.querySelector('#vue-app');
   const vueApp = appRoot?.__vue_app__;
   if (!vueApp) {
-    return { missingModelCandidates: null, folderPaths: fallbackPaths };
+    return {
+      missingModelCandidates: null,
+      folderPaths: fallbackPaths,
+      fileSizes: null
+    };
   }
 
   const pinia = findPiniaInstance(vueApp);
   if (!pinia) {
-    return { missingModelCandidates: null, folderPaths: fallbackPaths };
+    return {
+      missingModelCandidates: null,
+      folderPaths: fallbackPaths,
+      fileSizes: null
+    };
   }
 
   const store = getPiniaStores(pinia).find((entry) =>
@@ -473,6 +481,7 @@ function getMissingModelStoreData(fallbackPaths) {
   );
   const missingModelCandidates = unwrapMaybeRef(store?.missingModelCandidates);
   const storeFolderPaths = unwrapMaybeRef(store?.folderPaths);
+  const storeFileSizes = unwrapMaybeRef(store?.fileSizes);
 
   return {
     missingModelCandidates: Array.isArray(missingModelCandidates)
@@ -481,7 +490,11 @@ function getMissingModelStoreData(fallbackPaths) {
     folderPaths:
       storeFolderPaths && typeof storeFolderPaths === 'object'
         ? storeFolderPaths
-        : fallbackPaths
+        : fallbackPaths,
+    fileSizes:
+      storeFileSizes && typeof storeFileSizes === 'object'
+        ? storeFileSizes
+        : null
   };
 }
 
@@ -779,6 +792,47 @@ function getButtonText(button) {
   ).trim();
 }
 
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return null;
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const decimals =
+    unitIndex === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(decimals).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1')} ${units[unitIndex]}`;
+}
+
+function extractSizeLabel(text) {
+  if (typeof text !== 'string') return null;
+  const match = text.match(/\(([^()]+)\)\s*$/);
+  if (!match) return null;
+  return match[1]?.trim() || null;
+}
+
+function getDirectDownloadLabel(url, fileSizes, fallbackText) {
+  const knownSize = formatFileSize(fileSizes?.[url]);
+  const fallbackSize = extractSizeLabel(fallbackText);
+  const sizeLabel = knownSize || fallbackSize;
+  return sizeLabel ? `${LABELS.idle} (${sizeLabel})` : LABELS.idle;
+}
+
+function isPanelActionButton(button) {
+  const className = button?.className;
+  if (typeof className !== 'string') return false;
+  return (
+    className.includes('inline-flex') &&
+    className.includes('bg-secondary-background') &&
+    className.includes('rounded-lg') &&
+    className.includes('shrink-0')
+  );
+}
+
 function findPanelBulkButtons() {
   const seenScopes = new Set();
   return Array.from(document.querySelectorAll('button')).filter((button) => {
@@ -787,6 +841,7 @@ function findPanelBulkButtons() {
 
     const text = getButtonText(button);
     const isPatched = button.dataset.directDownloadPanelBulk === '1';
+    if (!isPanelActionButton(button)) return false;
     if (!isPatched && !/download\s+all/i.test(text)) return false;
 
     const scope = findPanelBulkScope(button);
@@ -832,13 +887,6 @@ function attachPanelRowButtons(folderPaths) {
   const storeData = getMissingModelStoreData(folderPaths);
   const pathMap = getPanelPathMap(folderPaths, storeData);
   allRows.forEach(({ element: row, props }) => {
-    const existingPatchedButton = row.querySelector(
-      `.${BUTTON_CLASS}[data-direct-download-panel-row="1"]`
-    );
-    if (existingPatchedButton) {
-      return;
-    }
-
     const inputContainer = getPanelInputContainer(row);
     if (!inputContainer) return;
 
@@ -861,15 +909,25 @@ function attachPanelRowButtons(folderPaths) {
     }
 
     if (!(button instanceof HTMLButtonElement)) return;
+    const idleLabel = getDirectDownloadLabel(
+      info.url,
+      storeData.fileSizes,
+      getButtonText(button)
+    );
 
     button.classList.add(BUTTON_CLASS);
     button.dataset.directDownloadPanelRow = '1';
     button.dataset.directDownloadPayload = JSON.stringify(payload);
-    button.dataset.directDownloadLabel = LABELS.idle;
+    button.dataset.directDownloadLabel = idleLabel;
     button.title = destinationLabel || info.directory;
     button.setAttribute('aria-label', `${LABELS.idle} ${info.filename}`);
-    setPanelButtonContent(button, LABELS.idle);
+    setPanelButtonContent(button, idleLabel);
 
+    if (button.dataset.directDownloadPanelRowBound === '1') {
+      return;
+    }
+
+    button.dataset.directDownloadPanelRowBound = '1';
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopImmediatePropagation();
