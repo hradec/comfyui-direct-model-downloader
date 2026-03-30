@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,62 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 _ROUTE_PATH = "/internal/download_model"
 _BACKEND_REGISTERED = False
+
+
+def _format_size(num_bytes: int | float | None) -> str | None:
+    if not isinstance(num_bytes, (int, float)) or num_bytes <= 0:
+        return None
+
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(num_bytes)
+    unit_index = 0
+    while value >= 1024 and unit_index < len(units) - 1:
+        value /= 1024
+        unit_index += 1
+
+    if unit_index == 0:
+        precision = 0
+    elif value >= 100:
+        precision = 0
+    elif value >= 10:
+        precision = 1
+    else:
+        precision = 2
+
+    formatted = f"{value:.{precision}f}".rstrip("0").rstrip(".")
+    return f"{formatted} {units[unit_index]}"
+
+
+def _build_download_error_message(
+    exc: Exception,
+    target_path: Path,
+    total_bytes: int | None = None,
+    downloaded_bytes: int | None = None,
+) -> str:
+    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+        parts = [f"No space left on device while writing to '{target_path}'."]
+
+        downloaded_label = _format_size(downloaded_bytes)
+        if downloaded_label:
+            parts.append(f"Downloaded before failure: {downloaded_label}.")
+
+        total_label = _format_size(total_bytes)
+        if total_label:
+            parts.append(f"Expected size: {total_label}.")
+
+        try:
+            free_bytes = shutil.disk_usage(target_path.parent).free
+        except OSError:
+            free_bytes = None
+
+        free_label = _format_size(free_bytes)
+        if free_label:
+            parts.append(f"Free space reported on destination drive: {free_label}.")
+
+        parts.append("The direct downloader writes to the destination folder on that drive.")
+        return " ".join(parts)
+
+    return str(exc)
 
 
 def _schedule_backend_registration(delay: float = 0.5) -> None:
@@ -110,6 +168,8 @@ def _register_backend_route() -> None:
                 await stream_response.drain()
 
             timeout = ClientTimeout(total=None)
+            total_bytes = 0
+            downloaded = 0
             try:
                 async with ClientSession(timeout=timeout) as session:
                     async with session.get(url) as remote_response:
@@ -129,7 +189,6 @@ def _register_backend_route() -> None:
                             leave=False,
                             desc=f"Downloading {target_path.name}"
                         )
-                        downloaded = 0
                         try:
                             target_path.parent.mkdir(parents=True, exist_ok=True)
                             with target_path.open("wb") as handle:
@@ -153,15 +212,40 @@ def _register_backend_route() -> None:
                 })
                 tqdm.write(f"Saved to {target_path}")
             except Exception as exc:  # pragma: no cover - runtime protection
-                if target_path.exists():
-                    target_path.unlink()
-                app.logger.log_error(f"Failed to download model from {url}: {exc}")
-                await send_event({
-                    "status": "error",
-                    "message": str(exc)
-                })
+                error_message = _build_download_error_message(
+                    exc,
+                    target_path,
+                    total_bytes=total_bytes or None,
+                    downloaded_bytes=downloaded or None,
+                )
+                try:
+                    if target_path.exists():
+                        target_path.unlink()
+                except OSError as cleanup_exc:
+                    app.logger.logging.warning(
+                        "Failed to remove partial download %s: %s",
+                        target_path,
+                        cleanup_exc,
+                    )
+                app.logger.logging.error(
+                    "Failed to download model from %s to %s: %s",
+                    url,
+                    target_path,
+                    error_message,
+                )
+                try:
+                    await send_event({
+                        "status": "error",
+                        "message": error_message,
+                        "path": str(target_path),
+                    })
+                except ConnectionResetError:
+                    pass
             finally:
-                await stream_response.write_eof()
+                try:
+                    await stream_response.write_eof()
+                except ConnectionResetError:
+                    pass
 
             return stream_response
 
@@ -285,6 +369,8 @@ class DirectModelDownloaderNode:
             temp_path.unlink()
 
         app.logger.logging.info("Downloading %s to %s", url, destination)
+        total = 0
+        downloaded = 0
         try:
             with requests.get(url, stream=True, timeout=60) as response:
                 response.raise_for_status()
@@ -303,13 +389,26 @@ class DirectModelDownloaderNode:
                             if not chunk:
                                 continue
                             handle.write(chunk)
+                            downloaded += len(chunk)
                             progress.update(len(chunk))
                 finally:
                     progress.close()
         except Exception as exc:
             if temp_path.exists():
                 temp_path.unlink()
-            raise RuntimeError(f"Failed to download {url}: {exc}") from exc
+            error_message = _build_download_error_message(
+                exc,
+                destination,
+                total_bytes=total or None,
+                downloaded_bytes=downloaded or None,
+            )
+            app.logger.logging.error(
+                "Failed to download model from %s to %s: %s",
+                url,
+                destination,
+                error_message,
+            )
+            raise RuntimeError(error_message) from exc
 
         temp_path.replace(destination)
         app.logger.logging.info("Saved model to %s", destination)
