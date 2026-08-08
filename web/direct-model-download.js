@@ -25,6 +25,10 @@ const PANEL_GROUP_SELECTOR =
   'div.flex.w-full.flex-col.border-t.border-interface-stroke.py-2';
 const MISSING_MODEL_ROW_ICON_SELECTOR =
   'i[class*="icon-[lucide--file-check]"]';
+const CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR =
+  '[data-testid="missing-model-download"]';
+const CURRENT_MISSING_MODEL_DOWNLOAD_ALL_SELECTOR =
+  '[data-testid="missing-model-download-all"]';
 const BADGE_DIRECTORY_MAP = {
   VAE: 'vae',
   DIFFUSION: 'diffusion_models',
@@ -571,6 +575,14 @@ function createPanelButton(label) {
   return { container, button };
 }
 
+function createCurrentPanelButton(label) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `${FALLBACK_DIALOG_BUTTON_CLASS} shrink-0 ${BUTTON_CLASS}`;
+  setPanelButtonContent(button, label);
+  return button;
+}
+
 function setPanelButtonContent(button, label) {
   button.innerHTML =
     '<i class="text-foreground mr-1 icon-[lucide--download] size-4 shrink-0" aria-hidden="true"></i>' +
@@ -637,8 +649,9 @@ function getPanelRowRoot(element) {
 
 function isMissingModelPanelRow(row) {
   return !!(
-    row?.querySelector?.(MISSING_MODEL_ROW_ICON_SELECTOR) &&
-    row.querySelector('p[title]')
+    (row?.querySelector?.(MISSING_MODEL_ROW_ICON_SELECTOR) &&
+      row.querySelector('p[title]')) ||
+    row?.querySelector?.(CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR)
   );
 }
 
@@ -658,6 +671,13 @@ function findMissingModelPanelRows() {
       findVueComponentWithModel(row.querySelector(MISSING_MODEL_ROW_ICON_SELECTOR));
     addRow(match?.element || row, match?.props);
   });
+
+  document
+    .querySelectorAll(CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR)
+    .forEach((button) => {
+      const match = findVueComponentWithModel(button);
+      addRow(match?.element || button, match?.props);
+    });
 
   if (!rows.size) {
     document
@@ -840,13 +860,21 @@ function findPanelBulkButtons() {
     if (button.closest(PANEL_ROW_SELECTOR)) return false;
 
     const text = getButtonText(button);
+    const isCurrentBulkButton = button.matches(
+      CURRENT_MISSING_MODEL_DOWNLOAD_ALL_SELECTOR
+    );
     const isPatched = button.dataset.directDownloadPanelBulk === '1';
-    if (!isPanelActionButton(button)) return false;
-    if (!isPatched && !/download\s+all/i.test(text)) return false;
+    if (!isCurrentBulkButton && !isPanelActionButton(button)) return false;
+    if (!isCurrentBulkButton && !isPatched && !/download\s+all/i.test(text)) return false;
 
     const scope = findPanelBulkScope(button);
     if (scope === document) return false;
-    if (!scope.querySelector(PANEL_ROW_SELECTOR)) return false;
+    if (
+      !scope.querySelector(PANEL_ROW_SELECTOR) &&
+      !scope.querySelector(CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR)
+    ) {
+      return false;
+    }
     if (seenScopes.has(scope)) return false;
     seenScopes.add(scope);
     return true;
@@ -856,7 +884,10 @@ function findPanelBulkButtons() {
 function findPanelBulkScope(button) {
   let current = button?.parentElement || null;
   while (current && current !== document.body) {
-    if (current.querySelector(PANEL_ROW_SELECTOR)) {
+    if (
+      current.querySelector(PANEL_ROW_SELECTOR) ||
+      current.querySelector(CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR)
+    ) {
       return current;
     }
     current = current.parentElement;
@@ -865,6 +896,13 @@ function findPanelBulkScope(button) {
 }
 
 function getPanelInputContainer(row) {
+  const currentDownloadButton = row?.querySelector(
+    CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR
+  );
+  if (currentDownloadButton?.parentElement) {
+    return currentDownloadButton.parentElement;
+  }
+
   return (
     row?.querySelector(':scope > .mt-1.flex.flex-col.gap-1') ||
     row?.querySelector('.mt-1.flex.flex-col.gap-1') ||
@@ -874,8 +912,9 @@ function getPanelInputContainer(row) {
 
 function getExistingPanelDownloadButton(inputContainer) {
   return (
-    inputContainer?.querySelector(':scope > .flex.w-full.items-start.py-1 button') ||
-    inputContainer?.querySelector('.flex.w-full.items-start.py-1 button') ||
+    inputContainer?.querySelector(
+      `.${BUTTON_CLASS}[data-direct-download-panel-row="1"]`
+    ) ||
     null
   );
 }
@@ -903,16 +942,24 @@ function attachPanelRowButtons(folderPaths) {
     let button = existingButton;
 
     if (!button) {
-      const created = createPanelButton(LABELS.idle);
-      inputContainer.appendChild(created.container);
-      button = created.button;
+      const isCurrentRow = !!row.querySelector(
+        CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR
+      );
+      if (isCurrentRow) {
+        button = createCurrentPanelButton(LABELS.idle);
+        inputContainer.appendChild(button);
+      } else {
+        const created = createPanelButton(LABELS.idle);
+        inputContainer.appendChild(created.container);
+        button = created.button;
+      }
     }
 
     if (!(button instanceof HTMLButtonElement)) return;
     const idleLabel = getDirectDownloadLabel(
       info.url,
       storeData.fileSizes,
-      getButtonText(button)
+      existingButton ? button.dataset.directDownloadLabel : getButtonText(button)
     );
 
     button.classList.add(BUTTON_CLASS);
@@ -921,12 +968,12 @@ function attachPanelRowButtons(folderPaths) {
     button.dataset.directDownloadLabel = idleLabel;
     button.title = destinationLabel || info.directory;
     button.setAttribute('aria-label', `${LABELS.idle} ${info.filename}`);
-    setPanelButtonContent(button, idleLabel);
 
     if (button.dataset.directDownloadPanelRowBound === '1') {
       return;
     }
 
+    setPanelButtonContent(button, idleLabel);
     button.dataset.directDownloadPanelRowBound = '1';
     button.addEventListener('click', (event) => {
       event.preventDefault();
@@ -974,6 +1021,32 @@ function collectDownloadTargets(buttons) {
       const payload = parseButtonPayload(rowButton);
       if (!payload) return null;
       return { button: rowButton, payload };
+    })
+    .filter(Boolean);
+}
+
+function collectStoreDownloadTargets(folderPaths) {
+  const storeData = getMissingModelStoreData(folderPaths);
+  const pathMap = getPanelPathMap(folderPaths, storeData);
+  const seen = new Set();
+
+  return (storeData.missingModelCandidates || [])
+    .map((model) => {
+      const payload = buildPayload(
+        {
+          url: model?.url,
+          directory: model?.directory,
+          filename: model?.name
+        },
+        pathMap?.[model?.directory]?.[0]
+      );
+      if (!payload) return null;
+
+      const key = `${payload.directory}/${payload.filename}/${payload.url}`;
+      if (seen.has(key)) return null;
+      seen.add(key);
+
+      return { button: document.createElement('button'), payload };
     })
     .filter(Boolean);
 }
@@ -1139,12 +1212,14 @@ function attachPanelBulkButtons(folderPaths) {
       if (button.disabled) return;
 
       attachPanelRowButtons(folderPaths);
-      const scope = findPanelBulkScope(button);
-      const targets = collectDownloadTargets(
-        scope.querySelectorAll(
+      let targets = collectDownloadTargets(
+        document.querySelectorAll(
           `.${BUTTON_CLASS}[data-direct-download-panel-row="1"]`
         )
       );
+      if (!targets.length) {
+        targets = collectStoreDownloadTargets(folderPaths);
+      }
       await performBulkDownload(button, targets);
     }, true);
   });
