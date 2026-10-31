@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -26,6 +27,30 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 _ROUTE_PATH = "/internal/download_model"
 _BACKEND_REGISTERED = False
+
+# Hugging Face hosts that may require a private/gated-model token.
+_HF_HOSTS = ("huggingface.co", "hf.co")
+
+
+def _auth_headers(url: str) -> dict[str, str]:
+    """Return request headers for this URL.
+
+    A Hugging Face download needs `Authorization: Bearer $HF_TOKEN` for private
+    or gated repositories. The token is attached only to Hugging Face hosts so it
+    can never leak to an arbitrary download URL. Without `HF_TOKEN` set in the
+    ComfyUI server environment the downloads behave exactly as before.
+    """
+
+    token = os.environ.get("HF_TOKEN", "").strip()
+    if not token:
+        return {}
+
+    host = (urlparse(url).hostname or "").lower()
+    if not any(host == domain or host.endswith(f".{domain}") for domain in _HF_HOSTS):
+        return {}
+
+    app.logger.logging.info("Using HF_TOKEN from the environment for %s", host)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _format_size(num_bytes: int | float | None) -> str | None:
@@ -172,7 +197,7 @@ def _register_backend_route() -> None:
             downloaded = 0
             try:
                 async with ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as remote_response:
+                    async with session.get(url, headers=_auth_headers(url)) as remote_response:
                         remote_response.raise_for_status()
                         total_bytes = int(remote_response.headers.get("content-length") or 0)
                         await send_event({
@@ -372,7 +397,7 @@ class DirectModelDownloaderNode:
         total = 0
         downloaded = 0
         try:
-            with requests.get(url, stream=True, timeout=60) as response:
+            with requests.get(url, stream=True, timeout=60, headers=_auth_headers(url)) as response:
                 response.raise_for_status()
                 total = int(response.headers.get("content-length") or 0)
                 progress = tqdm(

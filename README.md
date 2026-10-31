@@ -18,6 +18,16 @@ This extension adds two complementary features that make it easier to fetch miss
 3. Restart ComfyUI so the route, frontend assets, and node class are registered.
 4. Perform a hard refresh in the browser after restarting the server.
 
+### Private or gated Hugging Face models
+
+Export `HF_TOKEN` in the environment that starts ComfyUI (for example inside your `run_*.sh`):
+
+```bash
+export HF_TOKEN="hf_..."
+```
+
+Downloads from `huggingface.co` / `hf.co` then carry `Authorization: Bearer $HF_TOKEN`, both through the **Download directly** button and the `DirectModelDownload` node. The header is never attached to any other host, and behaviour is unchanged when the variable is unset.
+
 ---
 
 ## Usage

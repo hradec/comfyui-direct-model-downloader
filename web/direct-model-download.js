@@ -29,6 +29,10 @@ const CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR =
   '[data-testid="missing-model-download"]';
 const CURRENT_MISSING_MODEL_DOWNLOAD_ALL_SELECTOR =
   '[data-testid="missing-model-download-all"]';
+// Rows are matched through the download button and the Pinia store only: the
+// panel's tailwind classes, its row icon and Vue's dev-only component handles
+// all change between frontend releases, so none of them may be relied upon.
+const ROW_NAME_LOOKUP_DEPTH = 4;
 const BADGE_DIRECTORY_MAP = {
   VAE: 'vae',
   DIFFUSION: 'diffusion_models',
@@ -835,11 +839,82 @@ function extractSizeLabel(text) {
   return match[1]?.trim() || null;
 }
 
-function getDirectDownloadLabel(url, fileSizes, fallbackText) {
+function getDirectDownloadLabel(url, fileSizes, fallbackText, baseLabel = LABELS.idle) {
   const knownSize = formatFileSize(fileSizes?.[url]);
   const fallbackSize = extractSizeLabel(fallbackText);
   const sizeLabel = knownSize || fallbackSize;
-  return sizeLabel ? `${LABELS.idle} (${sizeLabel})` : LABELS.idle;
+  return sizeLabel ? `${baseLabel} (${sizeLabel})` : baseLabel;
+}
+
+function resolveRowModelName(button, candidates) {
+  const names = new Set(
+    (candidates || []).map((candidate) => candidate?.name).filter(Boolean)
+  );
+  if (!names.size) return null;
+
+  let node = button?.parentElement || null;
+  for (let depth = 0; node && depth < ROW_NAME_LOOKUP_DEPTH; depth += 1) {
+    const hit = Array.from(node.querySelectorAll('[title]')).find((element) =>
+      names.has((element.getAttribute('title') || '').trim())
+    );
+    if (hit) return hit.getAttribute('title').trim();
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function detachNativeClickHandlers(button) {
+  // cloneNode() copies attributes but not event listeners, so swapping the copy
+  // removes the frontend's own click handler (browser mode would otherwise open
+  // the gated Hugging Face URL in a new tab). Same element, same classes, so the
+  // panel keeps its look and the data-testids still resolve on reruns.
+  const clone = button.cloneNode(true);
+  button.replaceWith(clone);
+  return clone;
+}
+
+function takeoverCurrentPanelRowButtons(storeData, pathMap) {
+  let taken = 0;
+
+  document.querySelectorAll(CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR).forEach((rawButton) => {
+    if (!(rawButton instanceof HTMLButtonElement)) return;
+
+    const bound = rawButton.dataset.directDownloadPanelRowBound === '1';
+
+    const modelName = resolveRowModelName(rawButton, storeData.missingModelCandidates);
+    const info = findStoreMissingModelInfo(modelName, null, storeData);
+    const payload = buildPayload(info, pathMap?.[info?.directory]?.[0]);
+    if (!payload) return;
+
+    const button = bound ? rawButton : detachNativeClickHandlers(rawButton);
+    button.dataset.directDownloadPayload = JSON.stringify(payload);
+    taken += 1;
+    if (bound) return;
+
+    const idleLabel = getDirectDownloadLabel(info.url, storeData.fileSizes, null, BULK_LABEL);
+    const destination = pathMap?.[info.directory]?.[0];
+
+    button.classList.add(BUTTON_CLASS);
+    button.dataset.directDownloadPanelRow = '1';
+    button.dataset.directDownloadLabel = idleLabel;
+    button.title = destination ? `${destination}/${info.filename}` : info.directory;
+    button.setAttribute('aria-label', `${BULK_LABEL} ${info.filename}`);
+    setPanelButtonContent(button, idleLabel);
+    button.dataset.directDownloadPanelRowBound = '1';
+    button.addEventListener(
+      'click',
+      (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        if (button.disabled) return;
+        performDownload(button, JSON.parse(button.dataset.directDownloadPayload));
+      },
+      true
+    );
+  });
+
+  return taken;
 }
 
 function isPanelActionButton(button) {
@@ -920,12 +995,19 @@ function getExistingPanelDownloadButton(inputContainer) {
 }
 
 function attachPanelRowButtons(folderPaths) {
+  const storeData = getMissingModelStoreData(folderPaths);
+  const pathMap = getPanelPathMap(folderPaths, storeData);
+
+  // Current frontend: take over each native per-row Download button in place.
+  const takenOver = takeoverCurrentPanelRowButtons(storeData, pathMap);
+
   const rows = findMissingModelPanelRows();
   const fallbackRows = rows.length ? [] : findMissingModelPanelRowsByButton();
   const allRows = rows.length ? rows : fallbackRows;
-  const storeData = getMissingModelStoreData(folderPaths);
-  const pathMap = getPanelPathMap(folderPaths, storeData);
   allRows.forEach(({ element: row, props }) => {
+    if (takenOver && row.querySelector?.(CURRENT_MISSING_MODEL_DOWNLOAD_SELECTOR)) {
+      return;
+    }
     const inputContainer = getPanelInputContainer(row);
     if (!inputContainer) return;
 
@@ -1189,8 +1271,11 @@ function attachDialogFooterButton(dialog, folderPaths, baseClassName) {
 }
 
 function attachPanelBulkButtons(folderPaths) {
-  findPanelBulkButtons().forEach((button) => {
-    if (!(button instanceof HTMLButtonElement)) return;
+  findPanelBulkButtons().forEach((rawButton) => {
+    if (!(rawButton instanceof HTMLButtonElement)) return;
+
+    const alreadyBound = rawButton.dataset.directDownloadPanelBulkBound === '1';
+    const button = alreadyBound ? rawButton : detachNativeClickHandlers(rawButton);
 
     button.classList.add(BUTTON_CLASS);
     button.dataset.directDownloadPanelBulk = '1';
