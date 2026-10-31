@@ -84,6 +84,23 @@ Downloads from `huggingface.co` / `hf.co` then carry `Authorization: Bearer $HF_
   - `error` returns the error message and cleans up partial files.
 - Mirrors progress to the console using `tqdm`.
 
+### 4. Model Disk Manager
+
+- Before every download the plugin checks the destination filesystem; when it holds less than `DIRECT_MODEL_MIN_FREE_GB` (default 100) GB free, it frees space first, and a write that still hits ENOSPC prunes and retries once.
+- Space is recovered by deleting the **least recently used** models, oldest access first, until the floor is restored.
+- Only models with a known download url are ever candidates. The urls live in `model_urls.json` (plugin folder, gitignored): they are harvested once per server start from ComfyUI's own workflow template packages and extended with every url this plugin downloads. Manual downloads, Hugging Face `.cache` trees and anything else without a url are immune.
+- Every deletion is appended to `model_disk_log.json` with path, url, size, last use and deletion time, so a pruned model is always recoverable.
+- "Used" is the file's access time (day granularity on `relatime` mounts such as NFS) or the plugin's own record, whichever is newer.
+- `GET /internal/model_disk` reports free space, prunable and unknown-url bytes and the eviction plan. `POST` the same path with `{"dry_run": false}` performs it; `min_free_gb` and `grace_days` may be overridden in the body.
+
+Environment of the ComfyUI server:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DIRECT_MODEL_MIN_FREE_GB` | `100` | free space the model filesystem should keep |
+| `DIRECT_MODEL_GRACE_DAYS` | `7` | models accessed more recently than this are never pruned |
+| `DIRECT_MODEL_AUTOPRUNE` | `1` | set `0` to only report, never delete |
+
 ---
 
 ## Development Notes
