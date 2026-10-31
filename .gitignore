@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+model_urls.json
+model_urls.json.tmp
+model_disk_log.json
